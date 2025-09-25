@@ -1,0 +1,63 @@
+name: Run Box downloader
+
+on:
+  # Manual trigger of the workflow from the GitHub Actions tab.
+  workflow_dispatch:
+    inputs:
+      share_url:
+        description: 'Public Box shared folder URL'
+        required: true
+
+jobs:
+  run-downloader:
+    runs-on: ubuntu-latest        # Use the latest Ubuntu runner provided by GitHub
+    timeout-minutes: 180          # Limit the runtime to 3 hours (in case of large downloads)
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        # Pulls the repository content into the runner so the script is available.
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+        # Installs the desired Python version into the runner.
+
+      - name: Install Chrome and chromedriver
+        uses: browser-actions/setup-chrome@v3
+        with:
+          chrome-version: 'latest'
+          install-chromedriver: true
+        # Ensures Google Chrome and a matching ChromeDriver are installed.
+        # This avoids the common Selenium mismatch problem.
+
+      - name: Install pip dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium webdriver-manager
+        # Installs Python dependencies required by the script.
+
+      - name: Run downloader script
+        env:
+          SHARE_URL: ${{ github.event.inputs.share_url }}
+        run: |
+          mkdir -p downloads
+          # Run the downloader in headless mode (no visible browser).
+          # Redirect all output and errors into a logfile.
+          python3 box_selenium_downloader.py \
+            --share "${SHARE_URL}" \
+            --out ./downloads \
+            --headless > downloads/downloader.log 2>&1 || true
+        # The script will download all files from the Box shared folder into ./downloads.
+        # Logs are stored in downloads/downloader.log for later inspection.
+
+      - name: Upload downloads artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-downloads
+          path: |
+            downloads
+            downloads/downloader.log
+        # Packages the downloaded files and the log into an artifact.
+        # The artifact can be downloaded from the workflow run page.
