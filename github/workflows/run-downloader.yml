@@ -29,7 +29,7 @@ jobs:
         with:
           chrome-version: 'stable'
         # Ensures Google Chrome and a matching ChromeDriver are installed.
-        # This avoids the common Selenium mismatch problem.
+        # This avoids the common Selenium mismatch problem
 
       - name: Install pip dependencies
         run: |
