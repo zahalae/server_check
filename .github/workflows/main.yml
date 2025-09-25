@@ -25,10 +25,9 @@ jobs:
         # Installs the desired Python version into the runner.
 
       - name: Install Chrome and chromedriver
-        uses: browser-actions/setup-chrome@v3
+        uses: browser-actions/setup-chrome@v1
         with:
-          chrome-version: 'latest'
-          install-chromedriver: true
+          chrome-version: 'stable'
         # Ensures Google Chrome and a matching ChromeDriver are installed.
         # This avoids the common Selenium mismatch problem.
 
