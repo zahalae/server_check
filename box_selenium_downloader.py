@@ -1,19 +1,20 @@
-#!/usr/bin/env python3
 """
-box_selenium_downloader_aria.py
+box_selenium_downloader.py
 
 Usage:
-  python3 box_selenium_downloader_aria.py --share "https://.../folder/..." --out ./data [--headless]
+  python3 box_selenium_downloader.py --share "https://.../folder/..." --out ./data [--headless]
 
 Notes:
 - For debugging run without --headless so you can see clicks.
 - Requires: selenium, webdriver-manager (optional, used if chromedriver not in PATH).
+- All messages are also written into downloader.log inside the output directory.
 """
 
 import os
 import time
 import argparse
 import re
+import logging
 from urllib.parse import urljoin, urlparse
 
 from selenium import webdriver
@@ -29,6 +30,14 @@ try:
     WDM = True
 except Exception:
     WDM = False
+
+# ---------- Logger ----------
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_stream_h = logging.StreamHandler()
+_stream_h.setFormatter(_formatter)
+logger.addHandler(_stream_h)
 
 
 # ---------- utilities ----------
@@ -148,7 +157,6 @@ def wait_for_download(out_path, timeout=600):
     download_tmp = out_path + ".crdownload"
     start = time.time()
     while time.time() - start < timeout:
-        # if final file exists and no .crdownload → done
         if os.path.exists(out_path) and not os.path.exists(download_tmp):
             return True
         time.sleep(1)
@@ -160,21 +168,21 @@ def download_via_browser(driver, links_map, out_dir):
     for key, (href, name) in links_map.items():
         out_path = os.path.join(out_dir, name)
         if os.path.exists(out_path):
-            print(f"[skip] exists: {name}")
+            logger.info("[skip] exists: %s", name)
             continue
 
-        print(f"[download] {name}")
+        logger.info("[download] %s", name)
         driver.get(href)
         clicked = click_download_in_viewer(driver)
         if clicked:
-            print(" -> waiting for file to finish...")
+            logger.info(" -> waiting for file to finish...")
             ok = wait_for_download(out_path, timeout=600)
             if ok:
-                print(f" -> done: {name}")
+                logger.info(" -> done: %s", name)
             else:
-                print(f" -> timeout, file not fully downloaded: {name}")
+                logger.warning(" -> timeout, file not fully downloaded: %s", name)
         else:
-            print(" -> download button not found")
+            logger.warning(" -> download button not found for %s", name)
 
 
 # ---------- main ----------
@@ -186,11 +194,10 @@ def download_shared_folder_with_aria(share_url, out_dir, headless=False):
         file_map = {}
         page_idx = 1
         while True:
-            print(f"[page {page_idx}] collecting links on {driver.current_url}")
+            logger.info("[page %d] collecting links on %s", page_idx, driver.current_url)
             collect_links_on_page(driver, file_map)
-            print(f" -> total collected: {len(file_map)}")
+            logger.info(" -> total collected: %d", len(file_map))
 
-            # remember first href to detect change
             try:
                 first = driver.find_element(By.XPATH, "//a[contains(@href, '/file/')]")
                 first_href = first.get_attribute("href")
@@ -199,19 +206,19 @@ def download_shared_folder_with_aria(share_url, out_dir, headless=False):
 
             clicked = click_next_page_aria(driver)
             if not clicked:
-                print(" -> aria Next not found — assuming last page.")
+                logger.info(" -> aria Next not found — assuming last page.")
                 break
 
             changed = wait_for_new_page(driver, first_href, timeout=12)
             if not changed:
-                print(" -> clicked aria but page didn't update within timeout; waiting and continuing.")
+                logger.info(" -> clicked aria but page didn't update within timeout.")
                 time.sleep(2)
             page_idx += 1
             time.sleep(0.6)
 
-        print(f"[collected] {len(file_map)} files total; starting downloads...")
+        logger.info("[collected] %d files total; starting downloads...", len(file_map))
         download_via_browser(driver, file_map, out_dir)
-        print("Done.")
+        logger.info("Done.")
     finally:
         try:
             driver.quit()
@@ -227,4 +234,13 @@ if __name__ == "__main__":
     p.add_argument("--headless", action="store_true", help="Run headless")
     args = p.parse_args()
 
-    download_shared_folder_with_aria(args.share, args.out, headless=args.headless)
+    os.makedirs(args.out, exist_ok=True)
+    log_path = os.path.join(args.out, "downloader.log")
+    file_h = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_h.setFormatter(_formatter)
+    logger.addHandler(file_h)
+
+    try:
+        download_shared_folder_with_aria(args.share, args.out, headless=args.headless)
+    except Exception:
+        logger.exception("Fatal error during execution")
