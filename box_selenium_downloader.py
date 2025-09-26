@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-box_selenium_downloader.py
+box_selenium_downloader_singlepage.py
 
 Usage:
-  python3 box_selenium_downloader.py --share "https://.../folder/..." --out ./downloads [--headless]
+  python3 box_selenium_downloader_singlepage.py --share "https://.../folder/..." --out ./downloads [--headless]
 
-Features:
-- Downloads all files from a Box shared folder.
-- Logs all actions into downloader.log in the output directory.
-- Retries failed downloads up to 3 times, refreshing the page if stuck.
-- Provides a final summary of results (downloaded, skipped, failed).
 """
 
 import os
@@ -56,7 +51,7 @@ def setup_driver(download_dir, headless=False):
         opts.add_argument("--headless=new")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")  # useful for servers
+    opts.add_argument("--disable-dev-shm-usage")
     prefs = {
         "download.default_directory": os.path.abspath(download_dir),
         "download.prompt_for_download": False,
@@ -77,6 +72,17 @@ def setup_driver(download_dir, headless=False):
 # ---------- collect links ----------
 def collect_links_on_page(driver, file_map):
     """Collect file links on the current page and store in file_map."""
+
+    # Scroll down to load all elements
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(0.5)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+
     base = driver.current_url
     anchors = driver.find_elements(By.XPATH, "//a[contains(@href, '/file/')]")
     for a in anchors:
@@ -90,46 +96,6 @@ def collect_links_on_page(driver, file_map):
         name = a.text.strip() or a.get_attribute("aria-label") or os.path.basename(urlparse(href).path)
         name = sanitize(name)
         file_map[key] = (href, name)
-
-
-# ---------- pagination ----------
-def click_next_page_aria(driver):
-    """Try clicking the aria-label='Next page' element."""
-    xpaths = [
-        "//button[@aria-label='Next page']",
-        "//button[@aria-label='Next Page']",
-        "//a[@aria-label='Next page']",
-        "//a[@aria-label='Next Page']",
-        "//button[contains(@aria-label, 'Next')]",
-        "//a[contains(@aria-label, 'Next')]",
-    ]
-    for xp in xpaths:
-        try:
-            el = driver.find_element(By.XPATH, xp)
-            if el.is_displayed() and el.is_enabled():
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                time.sleep(0.08)
-                driver.execute_script("arguments[0].click();", el)
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def wait_for_new_page(driver, prev_first_href, timeout=12):
-    """Wait until the first file link changes (page switched)."""
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            anchors = driver.find_elements(By.XPATH, "//a[contains(@href, '/file/')]")
-            if anchors:
-                cur_first = anchors[0].get_attribute("href")
-                if prev_first_href and cur_first != prev_first_href:
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.4)
-    return False
 
 
 # ---------- download ----------
@@ -154,10 +120,7 @@ def click_download_in_viewer(driver):
 
 
 def wait_for_download(out_path, timeout=600):
-    """
-    Wait until Chrome finishes downloading a file.
-    Chrome creates .crdownload temporary files while downloading.
-    """
+    """Wait until Chrome finishes downloading a file."""
     download_tmp = out_path + ".crdownload"
     start = time.time()
     while time.time() - start < timeout:
@@ -168,17 +131,12 @@ def wait_for_download(out_path, timeout=600):
 
 
 def download_via_browser(driver, links_map, out_dir):
-    """
-    Iterate over all collected file links and try to download them.
-    Each file gets up to MAX_ATTEMPTS retries with page refresh
-    if download button fails or Chrome hangs.
-    """
-
+    """Iterate over collected file links and download them."""
     os.makedirs(out_dir, exist_ok=True)
 
-    MAX_ATTEMPTS = 3         # maximum retries per file
-    ATTEMPT_TIMEOUT = 60     # max seconds to wait for .crdownload to appear
-    DOWNLOAD_TIMEOUT = 600   # max seconds to wait for download to finish
+    MAX_ATTEMPTS = 3
+    ATTEMPT_TIMEOUT = 60
+    DOWNLOAD_TIMEOUT = 600
 
     success_count = 0
     skip_count = 0
@@ -189,7 +147,6 @@ def download_via_browser(driver, links_map, out_dir):
         out_path = os.path.join(out_dir, name)
         tmp_file = out_path + ".crdownload"
 
-        # skip if file already exists
         if os.path.exists(out_path):
             logger.info("[skip] exists: %s", name)
             skip_count += 1
@@ -200,15 +157,12 @@ def download_via_browser(driver, links_map, out_dir):
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             logger.info(" -> attempt %d", attempt)
-
-            # open the file page
             try:
                 driver.get(href)
             except Exception:
                 logger.exception("Failed to open href: %s", href)
                 continue
 
-            # try to click the download button
             clicked = click_download_in_viewer(driver)
             if not clicked:
                 logger.warning(" -> download button not found, refreshing page")
@@ -216,7 +170,6 @@ def download_via_browser(driver, links_map, out_dir):
                 time.sleep(2)
                 continue
 
-            # watchdog: wait until download starts (file or .crdownload appears)
             start_time = time.time()
             started = False
             while time.time() - start_time < ATTEMPT_TIMEOUT:
@@ -231,7 +184,6 @@ def download_via_browser(driver, links_map, out_dir):
                 time.sleep(2)
                 continue
 
-            # wait until download finishes (no .crdownload remains)
             ok = wait_for_download(out_path, timeout=DOWNLOAD_TIMEOUT)
             if ok:
                 logger.info(" -> done: %s", name)
@@ -248,7 +200,6 @@ def download_via_browser(driver, links_map, out_dir):
             failed_files.append(name)
             logger.error(" -> failed after %d attempts: %s", MAX_ATTEMPTS, name)
 
-    # ---------- summary ----------
     logger.info("=" * 55)
     logger.info("SUMMARY")
     logger.info("Total files found: %d", len(links_map))
@@ -261,40 +212,20 @@ def download_via_browser(driver, links_map, out_dir):
 
 
 # ---------- main ----------
-def download_shared_folder_with_aria(share_url, out_dir, headless=False):
-    logger.info("Starting download; share_url=%s out_dir=%s headless=%s", share_url, out_dir, headless)
+def download_one_page(share_url, out_dir, headless=False):
+    logger.info("Starting single-page test; share_url=%s out_dir=%s headless=%s", share_url, out_dir, headless)
     driver = setup_driver(out_dir, headless=headless)
     try:
         driver.get(share_url)
         WebDriverWait(driver, 15).until(lambda d: d.find_elements(By.XPATH, "//a[contains(@href, '/file/')]"))
+
         file_map = {}
-        page_idx = 1
-        while True:
-            logger.info("[page %d] collecting links on %s", page_idx, driver.current_url)
-            collect_links_on_page(driver, file_map)
-            logger.info(" -> total collected: %d", len(file_map))
+        logger.info("[single page] collecting links on %s", driver.current_url)
+        collect_links_on_page(driver, file_map)
+        logger.info(" -> collected: %d files", len(file_map))
 
-            try:
-                first = driver.find_element(By.XPATH, "//a[contains(@href, '/file/')]")
-                first_href = first.get_attribute("href")
-            except Exception:
-                first_href = None
-
-            clicked = click_next_page_aria(driver)
-            if not clicked:
-                logger.info(" -> no Next button found — last page reached.")
-                break
-
-            changed = wait_for_new_page(driver, first_href, timeout=12)
-            if not changed:
-                logger.info(" -> clicked Next but page did not update in time.")
-                time.sleep(2)
-            page_idx += 1
-            time.sleep(0.6)
-
-        logger.info("[collected] %d files total; starting downloads...", len(file_map))
         download_via_browser(driver, file_map, out_dir)
-        logger.info("Done.")
+        logger.info("Done (single page mode).")
     finally:
         try:
             driver.quit()
@@ -317,6 +248,6 @@ if __name__ == "__main__":
     logger.addHandler(file_h)
 
     try:
-        download_shared_folder_with_aria(args.share, args.out, headless=args.headless)
+        download_one_page(args.share, args.out, headless=args.headless)
     except Exception:
         logger.exception("Fatal error during execution")
