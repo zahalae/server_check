@@ -73,12 +73,17 @@ def setup_driver(download_dir, headless=False):
 def collect_links_on_page(driver, file_map):
     """Collect file links on the current page and store in file_map."""
 
-    # Scroll down to load all elements
-    last_height = driver.execute_script("return document.body.scrollHeight")
+    # Try to scroll inside the main file list container
+    try:
+        scrollable = driver.find_element(By.XPATH, "//div[contains(@class, 'scroll')]")
+    except Exception:
+        scrollable = driver.find_element(By.TAG_NAME, "body")
+
+    last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable)
     while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        driver.execute_script("arguments[0].scrollTo(0, arguments[0].scrollHeight);", scrollable)
         time.sleep(0.5)
-        new_height = driver.execute_script("return document.body.scrollHeight")
+        new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable)
         if new_height == last_height:
             break
         last_height = new_height
