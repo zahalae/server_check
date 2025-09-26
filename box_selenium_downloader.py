@@ -13,6 +13,8 @@ import argparse
 import re
 import logging
 from urllib.parse import urljoin, urlparse
+import re, os
+from urllib.parse import urljoin, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -70,37 +72,30 @@ def setup_driver(download_dir, headless=False):
 
 
 # ---------- collect links ----------
-def collect_links_on_page(driver, file_map):
-    """Collect file links on the current page and store in file_map."""
-
-    # Try to scroll inside the main file list container
-    try:
-        scrollable = driver.find_element(By.XPATH, "//div[contains(@class, 'scroll')]")
-    except Exception:
-        scrollable = driver.find_element(By.TAG_NAME, "body")
-
-    last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable)
-    while True:
-        driver.execute_script("arguments[0].scrollTo(0, arguments[0].scrollHeight);", scrollable)
-        time.sleep(0.5)
-        new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable)
-        if new_height == last_height:
-            break
-        last_height = new_height
-
+def extract_all_file_links(driver, file_map):
+    """
+    Parse the full page source and extract any '/file/' URLs.
+    This avoids scroll/DOM issues when items are virtualized or hidden in JS.
+    """
+    src = driver.page_source or ""
     base = driver.current_url
-    anchors = driver.find_elements(By.XPATH, "//a[contains(@href, '/file/')]")
-    for a in anchors:
-        href = a.get_attribute("href")
-        if not href:
-            continue
-        href = urljoin(base, href)
-        key = href.split("?")[0]
+    found = set()
+
+    # 1) absolute URLs like https://.../file/...
+    abs_urls = re.findall(r'https?://[^"\'>\s]+/file/[^"\'>\s]+', src)
+    found.update(abs_urls)
+
+    # 2) relative paths like /file/...
+    rels = re.findall(r'(/file/[^"\'>\s]+)', src)
+    found.update(urljoin(base, r) for r in rels)
+
+    # clean and save
+    for u in sorted(found):
+        key = u.split("?")[0]
         if key in file_map:
             continue
-        name = a.text.strip() or a.get_attribute("aria-label") or os.path.basename(urlparse(href).path)
-        name = sanitize(name)
-        file_map[key] = (href, name)
+        name = os.path.basename(urlparse(u).path) or key.split("/")[-1] or "file"
+        file_map[key] = (u, name)
 
 
 # ---------- download ----------
