@@ -1,253 +1,105 @@
-#!/usr/bin/env python3
 """
-box_selenium_downloader_singlepage.py
+box_selenium_downloader_aria_test_one.py
 
+Minimal single-page verifier: prints how many file links were detected on the first page.
 Usage:
-  python3 box_selenium_downloader_singlepage.py --share "https://.../folder/..." --out ./downloads [--headless]
-
+  python3 box_selenium_downloader_aria_test_one.py --share "https://.../folder/..." [--headless]
 """
-
 import os
-import time
 import argparse
-import re
-import logging
-from urllib.parse import urljoin, urlparse
-import re, os
-from urllib.parse import urljoin, urlparse
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
-# webdriver_manager fallback (optional)
-try:
-    from selenium.webdriver.chrome.service import Service as ChromeService
-    from webdriver_manager.chrome import ChromeDriverManager
-    WDM = True
-except Exception:
-    WDM = False
+from urllib.parse import urljoin, urlparse
+import re
+import time
 
-
-# ---------- logger ----------
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_stream_h = logging.StreamHandler()
-_stream_h.setFormatter(_formatter)
-logger.addHandler(_stream_h)
-
-
-# ---------- utilities ----------
 def sanitize(name: str) -> str:
-    """Replace filesystem-unfriendly characters in filenames."""
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
-
-def setup_driver(download_dir, headless=False):
-    """Create a Chrome WebDriver with download directory configured."""
+def setup_driver(headless=False):
     opts = Options()
     if headless:
         opts.add_argument("--headless=new")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    prefs = {
-        "download.default_directory": os.path.abspath(download_dir),
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-    }
-    opts.add_experimental_option("prefs", prefs)
+    return webdriver.Chrome(options=opts)
 
-    try:
-        return webdriver.Chrome(options=opts)
-    except Exception:
-        if WDM:
-            svc = ChromeService(ChromeDriverManager().install())
-            return webdriver.Chrome(service=svc, options=opts)
-        raise
-
-
-# ---------- collect links ----------
-def extract_all_file_links(driver, file_map):
-    """
-    Parse the full page source and extract any '/file/' URLs.
-    This avoids scroll/DOM issues when items are virtualized or hidden in JS.
-    """
-    src = driver.page_source or ""
+def collect_links_on_page(driver):
     base = driver.current_url
-    found = set()
 
-    # 1) absolute URLs like https://.../file/...
-    abs_urls = re.findall(r'https?://[^"\'>\s]+/file/[^"\'>\s]+', src)
-    found.update(abs_urls)
-
-    # 2) relative paths like /file/...
-    rels = re.findall(r'(/file/[^"\'>\s]+)', src)
-    found.update(urljoin(base, r) for r in rels)
-
-    # clean and save
-    for u in sorted(found):
-        key = u.split("?")[0]
-        if key in file_map:
-            continue
-        name = os.path.basename(urlparse(u).path) or key.split("/")[-1] or "file"
-        file_map[key] = (u, name)
-
-
-# ---------- download ----------
-def click_download_in_viewer(driver):
-    """Click the Download button in Box file viewer."""
-    xpaths = [
-        "//button[contains(normalize-space(.), 'Download')]",
-        "//a[contains(normalize-space(.), 'Download')]",
-        "//button[@aria-label='Download']",
-        "//a[@aria-label='Download']",
-    ]
-    for xp in xpaths:
-        try:
-            el = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            driver.execute_script("arguments[0].scrollIntoView(true);", el)
-            time.sleep(0.08)
-            driver.execute_script("arguments[0].click();", el)
-            return True
-        except Exception:
-            continue
-    return False
-
-
-def wait_for_download(out_path, timeout=600):
-    """Wait until Chrome finishes downloading a file."""
-    download_tmp = out_path + ".crdownload"
+    target_count = 20
+    last_count = -1
+    stable_ticks = 0
     start = time.time()
-    while time.time() - start < timeout:
-        if os.path.exists(out_path) and not os.path.exists(download_tmp):
-            return True
-        time.sleep(1)
-    return False
+    while time.time() - start < 10:
+        anchors = driver.find_elements(By.XPATH, "//a[contains(@href, '/file/')]")
+        count = len(anchors)
+        if count >= target_count:
+            break
+        if count == last_count:
+            stable_ticks += 1
+        else:
+            stable_ticks = 0
+            last_count = count
 
-
-def download_via_browser(driver, links_map, out_dir):
-    """Iterate over collected file links and download them."""
-    os.makedirs(out_dir, exist_ok=True)
-
-    MAX_ATTEMPTS = 3
-    ATTEMPT_TIMEOUT = 60
-    DOWNLOAD_TIMEOUT = 600
-
-    success_count = 0
-    skip_count = 0
-    fail_count = 0
-    failed_files = []
-
-    for key, (href, name) in links_map.items():
-        out_path = os.path.join(out_dir, name)
-        tmp_file = out_path + ".crdownload"
-
-        if os.path.exists(out_path):
-            logger.info("[skip] exists: %s", name)
-            skip_count += 1
-            continue
-
-        logger.info("[download] %s", name)
-        downloaded = False
-
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            logger.info(" -> attempt %d", attempt)
-            try:
-                driver.get(href)
-            except Exception:
-                logger.exception("Failed to open href: %s", href)
-                continue
-
-            clicked = click_download_in_viewer(driver)
-            if not clicked:
-                logger.warning(" -> download button not found, refreshing page")
-                driver.refresh()
-                time.sleep(2)
-                continue
-
-            start_time = time.time()
-            started = False
-            while time.time() - start_time < ATTEMPT_TIMEOUT:
-                if os.path.exists(out_path) or os.path.exists(tmp_file):
-                    started = True
-                    break
-                time.sleep(1)
-
-            if not started:
-                logger.warning(" -> no download started within %d sec, retrying...", ATTEMPT_TIMEOUT)
-                driver.refresh()
-                time.sleep(2)
-                continue
-
-            ok = wait_for_download(out_path, timeout=DOWNLOAD_TIMEOUT)
-            if ok:
-                logger.info(" -> done: %s", name)
-                success_count += 1
-                downloaded = True
-                break
-            else:
-                logger.warning(" -> timeout, retrying after refresh: %s", name)
-                driver.refresh()
-                time.sleep(2)
-
-        if not downloaded:
-            fail_count += 1
-            failed_files.append(name)
-            logger.error(" -> failed after %d attempts: %s", MAX_ATTEMPTS, name)
-
-    logger.info("=" * 55)
-    logger.info("SUMMARY")
-    logger.info("Total files found: %d", len(links_map))
-    logger.info("Downloaded: %d", success_count)
-    logger.info("Skipped (already exist): %d", skip_count)
-    logger.info("Failed: %d", fail_count)
-    if failed_files:
-        logger.info("Failed files: %s", failed_files)
-    logger.info("=" * 55)
-
-
-# ---------- main ----------
-def download_one_page(share_url, out_dir, headless=False):
-    logger.info("Starting single-page test; share_url=%s out_dir=%s headless=%s", share_url, out_dir, headless)
-    driver = setup_driver(out_dir, headless=headless)
-    try:
-        driver.get(share_url)
-        WebDriverWait(driver, 15).until(lambda d: d.find_elements(By.XPATH, "//a[contains(@href, '/file/')]"))
-
-        file_map = {}
-        logger.info("[single page] collecting links on %s", driver.current_url)
-        collect_links_on_page(driver, file_map)
-        logger.info(" -> collected: %d files", len(file_map))
-
-        download_via_browser(driver, file_map, out_dir)
-        logger.info("Done (single page mode).")
-    finally:
         try:
-            driver.quit()
+            driver.execute_script("window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight*0.9)));")
+        except Exception:
+            pass
+        try:
+            driver.execute_script("""
+                (function(){
+                  var els = document.querySelectorAll('*');
+                  for (var i=0;i<els.length;i++){
+                    var e = els[i];
+                    var ch = e.clientHeight || 0;
+                    var sh = e.scrollHeight || 0;
+                    if (ch > 0 && sh > ch + 10) e.scrollTop = sh;
+                  }
+                })();
+            """)
+        except Exception:
+            pass
+        try:
+            if count > 0:
+                for a in anchors[max(0, count-3):]:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
         except Exception:
             pass
 
+        time.sleep(0.2 if stable_ticks < 3 else 0.35)
+        if stable_ticks >= 5:
+            break
 
-# ---------- CLI ----------
+    result = []
+    for a in driver.find_elements(By.XPATH, "//a[contains(@href, '/file/')]"):
+        href = a.get_attribute("href")
+        if not href:
+            continue
+        href = urljoin(base, href)
+        name = a.text.strip() or a.get_attribute("aria-label") or os.path.basename(urlparse(href).path)
+        result.append((href, sanitize(name)))
+    return result
+
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--share", required=True, help="Box shared folder URL")
-    p.add_argument("--out", default="./downloads", help="Output directory")
-    p.add_argument("--headless", action="store_true", help="Run headless")
-    args = p.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--share", required=True)
+    ap.add_argument("--headless", action="store_true")
+    args = ap.parse_args()
 
-    os.makedirs(args.out, exist_ok=True)
-    log_path = os.path.join(args.out, "downloader.log")
-    file_h = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    file_h.setFormatter(_formatter)
-    logger.addHandler(file_h)
-
+    d = setup_driver(headless=args.headless)
     try:
-        download_one_page(args.share, args.out, headless=args.headless)
-    except Exception:
-        logger.exception("Fatal error during execution")
+        d.get(args.share)
+        WebDriverWait(d, 15).until(lambda drv: drv.find_elements(By.XPATH, "//a[contains(@href, '/file/')]"))
+        links = collect_links_on_page(d)
+        print(f"Detected links: {len(links)}")
+        for i, (_, name) in enumerate(links, 1):
+            print(f"{i:02d}. {name}")
+    finally:
+        try:
+            d.quit()
+        except Exception:
+            pass
